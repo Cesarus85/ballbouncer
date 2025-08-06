@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>WebXR Ball Bouncer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { margin: 0; overflow: hidden; }
+    #info { position: absolute; top: 10px; left: 10px; color: white; z-index: 10; font-family: sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="info">Tippe/Drücke, um einen Ball zu werfen</div>
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.163/build/three.module.js';
+    import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.163/examples/jsm/webxr/ARButton.js';
+
+    let camera, scene, renderer;
+    let controller;
+    const balls = [];
+    const planes = new Map();
+    const gravity = -9.81;          // m/s²
+    const restitution = 0.8;        // wie stark der Ball abprallt (1 = perfekt elastisch)
+
+    let prevTime = null;
+
+    init();
+
+    function init() {
+      scene   = new THREE.Scene();
+      camera  = new THREE.PerspectiveCamera();
+
+      // Licht für den Ball
+      const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+      scene.add(light);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      // AR‑Button mit Passthrough & Plane‑Detection
+      document.body.appendChild(ARButton.createButton(renderer, {
+        requiredFeatures: [ 'hit-test', 'plane-detection' ],
+        optionalFeatures: [ 'dom-overlay' ],
+        domOverlay: { root: document.body }
+      }));
+
+      // Controller (Tap‑/Trigger‑Events)
+      controller = renderer.xr.getController(0);
+      controller.addEventListener('select', onSelect);
+      scene.add(controller);
+
+      renderer.setAnimationLoop(render);
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function onSelect() {
+      // Ball‑Geometrie
+      const radius = 0.05;
+      const geometry = new THREE.SphereGeometry(radius, 32, 32);
+      const material = new THREE.MeshStandardMaterial({ color: 0xff5533 });
+      const ball = new THREE.Mesh(geometry, material);
+
+      // Startposition = Kamera + leichter Offset vor dem Gesicht
+      const xrCam = renderer.xr.getCamera(camera);
+      const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(xrCam.quaternion).normalize();
+      ball.position.copy(xrCam.position).add(dir.clone().multiplyScalar(0.25));
+
+      // Anfangsgeschwindigkeit: in Blickrichtung, 3 m/s
+      ball.userData.velocity = dir.clone().multiplyScalar(3);
+      ball.userData.radius   = radius;
+      balls.push(ball);
+      scene.add(ball);
+    }
+
+    // Hilfsfunktion: unsichtbare (transparente) Meshes für jedes erkannte XRPlane anlegen
+    function syncPlanes(frame, referenceSpace) {
+      const info = frame.worldInformation;
+      if (!info || !info.planes) return;
+
+      info.planes.forEach((plane) => {
+        // Neues Plane entdeckt ⇒ Mesh anlegen
+        if (!planes.has(plane)) {
+          const mesh = createPlaneMesh();
+          planes.set(plane, mesh);
+          scene.add(mesh);
+        }
+
+        // Pose des Plane aktualisieren
+        const pose = frame.getPose(plane.planeSpace, referenceSpace);
+        if (pose) {
+          const mesh = planes.get(plane);
+          mesh.position.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+          mesh.quaternion.set(pose.transform.orientation.x, pose.transform.orientation.y, pose.transform.orientation.z, pose.transform.orientation.w);
+          // Größe anpassen (optionaler Komfort) – hier wird erstmal auf 1×1 m belassen
+        }
+      });
+    }
+
+    function createPlaneMesh() {
+      const geometry = new THREE.PlaneGeometry(1, 1);
+      const material = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.05, side: THREE.DoubleSide });
+      return new THREE.Mesh(geometry, material);
+    }
+
+    function simulate(delta) {
+      for (let i = balls.length - 1; i >= 0; i--) {
+        const ball = balls[i];
+        // Gravitation anwenden
+        ball.userData.velocity.y += gravity * delta;
+        ball.position.addScaledVector(ball.userData.velocity, delta);
+
+        // Kollisionsprüfung gegen erkannte Ebenen (Wände/Böden)
+        planes.forEach((mesh) => {
+          // Ebenennormalen ermitteln – Standard‑Normalen (0,0,1) um Mesh‑Rotation drehen
+          const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(mesh.quaternion).normalize();
+          const planePoint = mesh.position;
+          const ballToPlane = new THREE.Vector3().subVectors(ball.position, planePoint);
+          const distance   = ballToPlane.dot(normal);
+
+          // "Treffer" falls Abstand kleiner Radius (–0.05 m ≤ d ≤ 0.05 m)
+          if (Math.abs(distance) <= ball.userData.radius) {
+            // Geschwindigkeit in Normalenrichtung umkehren (Bounce)
+            const v = ball.userData.velocity;
+            const vN = normal.clone().multiplyScalar(v.dot(normal));
+            const vT = v.clone().sub(vN);
+            ball.userData.velocity.copy(vT.add(vN.negate().multiplyScalar(restitution)));
+
+            // Ball aus der Wand/Boden heraus schieben, damit er nicht "klebt"
+            ball.position.add(normal.clone().multiplyScalar(ball.userData.radius - distance));
+          }
+        });
+
+        // Aufräumen, falls Ball weit unter den Boden fällt (Performance)
+        if (ball.position.y < -5) {
+          scene.remove(ball);
+          balls.splice(i, 1);
+        }
+      }
+    }
+
+    function render(timestamp, frame) {
+      const delta = prevTime === null ? 0 : (timestamp - prevTime) / 1000;
+      prevTime = timestamp;
+
+      if (frame) {
+        const refSpace = renderer.xr.getReferenceSpace();
+        syncPlanes(frame, refSpace);
+      }
+
+      simulate(delta);
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
