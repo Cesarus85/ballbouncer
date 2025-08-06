@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <title>WebXR Ball Bouncer v1.1</title>
+  <title>WebXR Ball Bouncer v1.2</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; }
@@ -84,7 +84,7 @@
       const dir   = new THREE.Vector3(0, 0, -1).applyQuaternion(xrCam.quaternion).normalize();
       ball.position.copy(xrCam.position).add(dir.clone().multiplyScalar(0.25));
 
-      // Velocity (3 m/s)
+      // Velocity (3 m/s)
       ball.userData.velocity = dir.clone().multiplyScalar(3);
       ball.userData.radius   = radius;
       balls.push(ball);
@@ -115,7 +115,7 @@
 
     // Plane‑Mesh: halbtransparent zum Debuggen – Größe = grobes Bounding‑Rect
     function createPlaneMesh(xrPlane) {
-      // Versuche Größe abzuleiten (Fallback 2×2 m)
+      // Versuche Größe abzuleiten (Fallback 2×2 m)
       let sizeX = 2, sizeZ = 2;
       if (xrPlane.polygon && xrPlane.polygon.length >= 4) {
         const xs = xrPlane.polygon.map(p => p.x);
@@ -125,11 +125,15 @@
       }
       const geometry = new THREE.PlaneGeometry(sizeX, sizeZ);
       const material = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.05, side: THREE.DoubleSide });
-      return new THREE.Mesh(geometry, material);
+      const mesh = new THREE.Mesh(geometry, material);
+      
+      // Speichere XRPlane-Referenz für korrekte Normalenberechnung
+      mesh.userData.xrPlane = xrPlane;
+      return mesh;
     }
 
     // ────────────────────────────────────────────────────────────────────────────────
-    //  ▀▀▀▀▀▀  Physik‑Simulation (einfach)
+    //  ▀▀▀▀▀▀  Physik‑Simulation (verbessert)
     function simulate(delta) {
       for (let i = balls.length - 1; i >= 0; i--) {
         const ball = balls[i];
@@ -137,42 +141,67 @@
         // Gravitation ➜ v = v + g·Δt
         ball.userData.velocity.y += gravity * delta;
 
-        // Kandidat‑Position
-        const nextPos = ball.position.clone().addScaledVector(ball.userData.velocity, delta);
+        // Bewegung mit Kollisionsprüfung
+        let remainingTime = delta;
+        let currentPos = ball.position.clone();
+        let currentVel = ball.userData.velocity.clone();
+        
+        // Maximal 3 Bounces pro Frame um Stuck-Loops zu vermeiden
+        for (let bounce = 0; bounce < 3 && remainingTime > 0.001; bounce++) {
+          const nextPos = currentPos.clone().addScaledVector(currentVel, remainingTime);
+          let nearestCollision = null;
+          let nearestT = 1;
 
-        // Plane‑Kollisionen (Continuous Collision Detection)
-        planes.forEach(mesh => {
-          // Normal aus lokal‑Y statt Z (Bug‑Fix!)
-          const normal    = new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.quaternion).normalize();
-          const planePt   = mesh.position;
+          // Finde nächste Kollision mit allen Ebenen
+          planes.forEach(mesh => {
+            const xrPlane = mesh.userData.xrPlane;
+            if (!xrPlane) return;
 
-          const distA = new THREE.Vector3().subVectors(ball.position, planePt).dot(normal);
-          const distB = new THREE.Vector3().subVectors(nextPos,     planePt).dot(normal);
+            // Korrekte Normale aus XRPlane-Orientation (Z-Achse der Ebene)
+            const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(mesh.quaternion).normalize();
+            const planePt = mesh.position;
 
-          // Schneidet die Strecke das Plane? (Distanz wechselt Vorzeichen oder |distB| ≤ r)
-          if ((distA > 0 && distB <= 0) || Math.abs(distB) <= ball.userData.radius) {
-            // Auf Kollisionspunkt zurückspulen (lineare Interpolation)
-            const t = distA / (distA - distB);
-            ball.position.lerp(nextPos, t);
+            // Distanzen zur Ebene (mit Kugelradius)
+            const distA = new THREE.Vector3().subVectors(currentPos, planePt).dot(normal) - ball.userData.radius;
+            const distB = new THREE.Vector3().subVectors(nextPos, planePt).dot(normal) - ball.userData.radius;
 
-            // Geschwindigkeit reflektieren
-            const v     = ball.userData.velocity;
-            const vN    = normal.clone().multiplyScalar(v.dot(normal));
-            const vT    = v.clone().sub(vN);
-            const newV  = vT.add(vN.negate().multiplyScalar(restitution));
-            ball.userData.velocity.copy(newV);
+            // Kollision wenn Distanz das Vorzeichen wechselt
+            if (distA > 0 && distB <= 0) {
+              // Berechne Kollisionszeitpunkt
+              const t = Math.max(0, Math.min(1, distA / (distA - distB)));
+              if (t < nearestT) {
+                nearestT = t;
+                nearestCollision = { mesh, normal, planePt };
+              }
+            }
+          });
 
-            // Kleiner Abstand oberhalb des Planes
-            ball.position.add(normal.clone().multiplyScalar(ball.userData.radius + 0.001));
+          if (nearestCollision) {
+            // Bewege zur Kollisionsposition
+            const collisionPos = currentPos.clone().addScaledVector(currentVel, remainingTime * nearestT);
+            
+            // Reflektiere Geschwindigkeit
+            const { normal } = nearestCollision;
+            const vDotN = currentVel.dot(normal);
+            if (vDotN < 0) { // Nur reflektieren wenn sich dem Plane nähert
+              currentVel.addScaledVector(normal, -2 * vDotN * restitution);
+            }
 
-            // NextPos aktualisieren nach Bounce (Restzeit Δt·(1−t))
-            const remaining = (1 - t) * delta;
-            nextPos.copy(ball.position).addScaledVector(ball.userData.velocity, remaining);
+            // Position leicht oberhalb der Oberfläche setzen
+            currentPos.copy(collisionPos).addScaledVector(normal, ball.userData.radius + 0.001);
+            
+            // Verbleibende Zeit reduzieren
+            remainingTime *= (1 - nearestT);
+          } else {
+            // Keine Kollision, normale Bewegung
+            currentPos.copy(nextPos);
+            remainingTime = 0;
           }
-        });
+        }
 
         // Endgültige Position übernehmen
-        ball.position.copy(nextPos);
+        ball.position.copy(currentPos);
+        ball.userData.velocity.copy(currentVel);
 
         // Lebensdauer‑Cleanup
         if (ball.position.y < -5) {
