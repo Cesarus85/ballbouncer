@@ -18,7 +18,10 @@
   </style>
 </head>
 <body>
-  <div id="info">Tippe/Drücke, um einen Ball zu werfen</div>
+  <div id="info">
+    Tippe/Drücke, um einen Ball zu werfen<br>
+    <span id="debug">Ebenen: 0, Bälle: 0</span>
+  </div>
   <script type="module">
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.163/build/three.module.js';
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.163/examples/jsm/webxr/ARButton.js';
@@ -133,75 +136,80 @@
     }
 
     // ────────────────────────────────────────────────────────────────────────────────
-    //  ▀▀▀▀▀▀  Physik‑Simulation (verbessert)
+    //  ▀▀▀▀▀▀  Physik‑Simulation (mit Debug)
     function simulate(delta) {
+      // Debug-Info aktualisieren
+      document.getElementById('debug').textContent = `Ebenen: ${planes.size}, Bälle: ${balls.length}`;
+
       for (let i = balls.length - 1; i >= 0; i--) {
         const ball = balls[i];
 
         // Gravitation ➜ v = v + g·Δt
         ball.userData.velocity.y += gravity * delta;
 
-        // Bewegung mit Kollisionsprüfung
-        let remainingTime = delta;
-        let currentPos = ball.position.clone();
-        let currentVel = ball.userData.velocity.clone();
-        
-        // Maximal 3 Bounces pro Frame um Stuck-Loops zu vermeiden
-        for (let bounce = 0; bounce < 3 && remainingTime > 0.001; bounce++) {
-          const nextPos = currentPos.clone().addScaledVector(currentVel, remainingTime);
-          let nearestCollision = null;
-          let nearestT = 1;
+        // Einfache Kollisionsprüfung ohne komplexe Loops
+        const nextPos = ball.position.clone().addScaledVector(ball.userData.velocity, delta);
+        let collided = false;
 
-          // Finde nächste Kollision mit allen Ebenen
-          planes.forEach(mesh => {
-            const xrPlane = mesh.userData.xrPlane;
-            if (!xrPlane) return;
+        // Prüfe alle Ebenen
+        planes.forEach((mesh, xrPlane) => {
+          if (collided) return; // Erste Kollision verwenden
 
-            // Korrekte Normale aus XRPlane-Orientation (Z-Achse der Ebene)
-            const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(mesh.quaternion).normalize();
+          // Teste verschiedene Normale-Orientierungen
+          const normals = [
+            new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.quaternion), // Y-up (Boden)
+            new THREE.Vector3(0, 0, 1).applyQuaternion(mesh.quaternion), // Z-forward
+            new THREE.Vector3(1, 0, 0).applyQuaternion(mesh.quaternion), // X-right
+            new THREE.Vector3(0, -1, 0).applyQuaternion(mesh.quaternion), // Y-down (Decke)
+            new THREE.Vector3(0, 0, -1).applyQuaternion(mesh.quaternion), // Z-back
+            new THREE.Vector3(-1, 0, 0).applyQuaternion(mesh.quaternion)  // X-left
+          ];
+
+          for (const normal of normals) {
             const planePt = mesh.position;
+            
+            // Distanzen zur Ebene
+            const currentDist = new THREE.Vector3().subVectors(ball.position, planePt).dot(normal);
+            const nextDist = new THREE.Vector3().subVectors(nextPos, planePt).dot(normal);
+            
+            // Kollision wenn Ball die Ebene durchquert und nah genug ist
+            if (currentDist > ball.userData.radius && nextDist <= ball.userData.radius && Math.abs(nextDist) < 1.0) {
+              console.log('Kollision erkannt!', {
+                currentDist,
+                nextDist,
+                normal: normal.toArray(),
+                ballPos: ball.position.toArray(),
+                planePos: planePt.toArray()
+              });
 
-            // Distanzen zur Ebene (mit Kugelradius)
-            const distA = new THREE.Vector3().subVectors(currentPos, planePt).dot(normal) - ball.userData.radius;
-            const distB = new THREE.Vector3().subVectors(nextPos, planePt).dot(normal) - ball.userData.radius;
-
-            // Kollision wenn Distanz das Vorzeichen wechselt
-            if (distA > 0 && distB <= 0) {
-              // Berechne Kollisionszeitpunkt
-              const t = Math.max(0, Math.min(1, distA / (distA - distB)));
-              if (t < nearestT) {
-                nearestT = t;
-                nearestCollision = { mesh, normal, planePt };
+              // Direkte Reflexion der Geschwindigkeit
+              const vel = ball.userData.velocity;
+              const vDotN = vel.dot(normal);
+              if (vDotN < 0) {
+                vel.addScaledVector(normal, -2 * vDotN * restitution);
+                
+                // Ball oberhalb der Ebene positionieren
+                ball.position.copy(planePt).addScaledVector(normal, ball.userData.radius + 0.01);
+                collided = true;
+                break;
               }
             }
-          });
-
-          if (nearestCollision) {
-            // Bewege zur Kollisionsposition
-            const collisionPos = currentPos.clone().addScaledVector(currentVel, remainingTime * nearestT);
-            
-            // Reflektiere Geschwindigkeit
-            const { normal } = nearestCollision;
-            const vDotN = currentVel.dot(normal);
-            if (vDotN < 0) { // Nur reflektieren wenn sich dem Plane nähert
-              currentVel.addScaledVector(normal, -2 * vDotN * restitution);
-            }
-
-            // Position leicht oberhalb der Oberfläche setzen
-            currentPos.copy(collisionPos).addScaledVector(normal, ball.userData.radius + 0.001);
-            
-            // Verbleibende Zeit reduzieren
-            remainingTime *= (1 - nearestT);
-          } else {
-            // Keine Kollision, normale Bewegung
-            currentPos.copy(nextPos);
-            remainingTime = 0;
           }
+        });
+
+        // Position nur aktualisieren wenn keine Kollision
+        if (!collided) {
+          ball.position.copy(nextPos);
         }
 
-        // Endgültige Position übernehmen
-        ball.position.copy(currentPos);
-        ball.userData.velocity.copy(currentVel);
+        // Einfacher Boden-Fallback falls keine Ebenen erkannt werden
+        if (planes.size === 0 && ball.position.y <= 0.05) {
+          if (ball.userData.velocity.y < 0) {
+            ball.userData.velocity.y = -ball.userData.velocity.y * restitution;
+            ball.position.y = 0.05;
+            console.log('Fallback-Boden Kollision bei y=0');
+          }
+        }
 
         // Lebensdauer‑Cleanup
         if (ball.position.y < -5) {
