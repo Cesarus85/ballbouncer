@@ -1,502 +1,254 @@
-console.log('=== GAME.JS LOADED ===');
-console.log('THREE available:', typeof THREE);
-console.log('CANNON available:', typeof CANNON);
-console.log('WebXR available:', typeof navigator.xr);
+console.log('=== SIMPLE BALL BOUNCER GAME ===');
 
-class BallBouncerGame {
+class SimpleBallBouncerGame {
     constructor() {
-        console.log('=== CREATING GAME INSTANCE ===');
-        this.scene = null;
-        this.camera = null;
-        this.renderer = null;
-        this.world = null;
-        this.xrSession = null;
-        this.controllers = [];
+        console.log('Creating simple ball bouncer game...');
+        
+        this.canvas = null;
+        this.ctx = null;
         this.balls = [];
-        this.planes = [];
-        this.planeAnchors = [];
+        this.isRunning = false;
+        this.width = window.innerWidth;
+        this.height = window.innerHeight;
         
         this.statusElement = document.getElementById('status');
         this.enterVRButton = document.getElementById('enterVR');
-        
-        console.log('Status element found:', !!this.statusElement);
-        console.log('VR button found:', !!this.enterVRButton);
         
         if (!this.statusElement || !this.enterVRButton) {
             console.error('Required DOM elements not found!');
             return;
         }
         
-        console.log('Starting initialization...');
         this.init();
     }
     
-    async init() {
+    init() {
+        console.log('Initializing canvas game...');
+        this.updateStatus('Initialisiere Canvas...');
+        
         try {
-            this.updateStatus('Prüfe WebXR Unterstützung...');
-            console.log('Starting initialization...');
+            this.setupCanvas();
+            this.setupControls();
+            this.start();
             
-            if (!navigator.xr) {
-                console.log('WebXR not available, falling back to desktop mode');
-                this.initDesktopMode();
-                return;
-            }
-            
-            console.log('WebXR available, checking AR support...');
-            const isSupported = await navigator.xr.isSessionSupported('immersive-ar');
-            console.log('AR supported:', isSupported);
-            
-            if (!isSupported) {
-                console.log('AR not supported, trying VR...');
-                const isVRSupported = await navigator.xr.isSessionSupported('immersive-vr');
-                console.log('VR supported:', isVRSupported);
-                
-                if (!isVRSupported) {
-                    console.log('Neither AR nor VR supported, falling back to desktop');
-                    this.initDesktopMode();
-                    return;
-                }
-                this.xrMode = 'immersive-vr';
-            } else {
-                this.xrMode = 'immersive-ar';
-            }
-            
-            console.log('Setting up scene...');
-            this.setupScene();
-            console.log('Setting up physics...');
-            this.setupPhysics();
-            console.log('Setting up renderer...');
-            this.setupRenderer();
-            console.log('Setting up controllers...');
-            this.setupControllers();
-            
-            this.enterVRButton.disabled = false;
-            this.enterVRButton.addEventListener('click', () => this.enterXR());
-            
-            this.updateStatus(`Bereit! Klicke "VR starten" (${this.xrMode})`);
-            console.log('Initialization complete');
+            this.updateStatus('Bereit! Klicke zum Werfen oder drücke Leertaste');
             
         } catch (error) {
             this.updateStatus('Fehler: ' + error.message);
             console.error('Initialisierungsfehler:', error);
-            this.initDesktopMode();
         }
     }
     
-    initDesktopMode() {
-        console.log('Initializing desktop mode...');
-        this.xrMode = 'desktop';
+    setupCanvas() {
+        // Create canvas
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = this.width;
+        this.canvas.height = this.height;
+        this.canvas.style.position = 'absolute';
+        this.canvas.style.top = '0';
+        this.canvas.style.left = '0';
+        this.canvas.style.zIndex = '1';
+        this.canvas.style.background = 'radial-gradient(circle, #1a1a2e 0%, #000000 100%)';
         
-        this.setupScene();
-        this.setupPhysics();
-        this.setupRenderer();
+        document.body.appendChild(this.canvas);
         
-        // Add basic camera controls for desktop
-        this.camera.position.set(0, 1.6, 3);
+        this.ctx = this.canvas.getContext('2d');
         
-        // Add a ground plane for desktop mode
-        this.addDesktopGround();
-        
-        // Change button text and functionality
-        this.enterVRButton.textContent = 'Bälle werfen';
-        this.enterVRButton.disabled = false;
-        this.enterVRButton.addEventListener('click', () => this.shootBallDesktop());
-        
-        this.updateStatus('Desktop-Modus bereit! Klicke zum Werfen');
-        
-        // Start animation loop
-        this.animate();
-    }
-    
-    addDesktopGround() {
-        // Visual ground
-        const groundGeometry = new THREE.PlaneGeometry(10, 10);
-        const groundMaterial = new THREE.MeshLambertMaterial({ 
-            color: 0x808080,
-            transparent: true,
-            opacity: 0.5 
-        });
-        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-        ground.rotation.x = -Math.PI / 2;
-        ground.position.y = -1;
-        this.scene.add(ground);
-        
-        // Physics ground
-        const groundShape = new CANNON.Plane();
-        const groundBody = new CANNON.Body({ mass: 0 });
-        groundBody.addShape(groundShape);
-        groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
-        groundBody.position.set(0, -1, 0);
-        this.world.addBody(groundBody);
-    }
-    
-    shootBallDesktop() {
-        const ballGeometry = new THREE.SphereGeometry(0.05, 16, 16);
-        const ballMaterial = new THREE.MeshLambertMaterial({
-            color: Math.random() * 0xffffff
-        });
-        const ballMesh = new THREE.Mesh(ballGeometry, ballMaterial);
-        ballMesh.castShadow = true;
-        
-        // Random starting position and direction for desktop
-        const startX = (Math.random() - 0.5) * 2;
-        const startY = 2;
-        const startZ = 2;
-        
-        ballMesh.position.set(startX, startY, startZ);
-        this.scene.add(ballMesh);
-        
-        // Physics body
-        const ballShape = new CANNON.Sphere(0.05);
-        const ballBody = new CANNON.Body({ 
-            mass: 1,
-            material: new CANNON.Material({ friction: 0.3, restitution: 0.8 })
-        });
-        ballBody.addShape(ballShape);
-        ballBody.position.set(startX, startY, startZ);
-        
-        // Random velocity
-        const velocity = new CANNON.Vec3(
-            (Math.random() - 0.5) * 5,
-            -2,
-            (Math.random() - 0.5) * 5
-        );
-        ballBody.velocity = velocity;
-        
-        this.world.addBody(ballBody);
-        
-        this.balls.push({
-            mesh: ballMesh,
-            body: ballBody,
-            created: Date.now()
-        });
-        
-        // Remove old balls
-        if (this.balls.length > 20) {
-            const oldBall = this.balls.shift();
-            this.scene.remove(oldBall.mesh);
-            this.world.removeBody(oldBall.body);
-            oldBall.mesh.geometry.dispose();
-            oldBall.mesh.material.dispose();
-        }
-    }
-    
-    setupScene() {
-        this.scene = new THREE.Scene();
-        this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        
-        // Ambient light for better visibility
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-        this.scene.add(ambientLight);
-        
-        // Directional light
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        directionalLight.position.set(1, 1, 1);
-        this.scene.add(directionalLight);
-    }
-    
-    setupPhysics() {
-        this.world = new CANNON.World();
-        this.world.gravity.set(0, -9.82, 0);
-        this.world.broadphase = new CANNON.NaiveBroadphase();
-        
-        // Default contact material
-        const contactMaterial = new CANNON.ContactMaterial(
-            new CANNON.Material(),
-            new CANNON.Material(),
-            {
-                friction: 0.3,
-                restitution: 0.7
-            }
-        );
-        this.world.addContactMaterial(contactMaterial);
-    }
-    
-    setupRenderer() {
-        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.xr.enabled = true;
-        this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-        
-        document.body.appendChild(this.renderer.domElement);
-        
-        // Handle window resize
+        // Handle resize
         window.addEventListener('resize', () => {
-            this.camera.aspect = window.innerWidth / window.innerHeight;
-            this.camera.updateProjectionMatrix();
-            this.renderer.setSize(window.innerWidth, window.innerHeight);
+            this.width = window.innerWidth;
+            this.height = window.innerHeight;
+            this.canvas.width = this.width;
+            this.canvas.height = this.height;
         });
-    }
-    
-    setupControllers() {
-        for (let i = 0; i < 2; i++) {
-            const controller = this.renderer.xr.getController(i);
-            controller.addEventListener('selectstart', (event) => this.onSelectStart(event, i));
-            controller.addEventListener('selectend', (event) => this.onSelectEnd(event, i));
-            
-            // Visual representation of controller
-            const geometry = new THREE.CylinderGeometry(0.005, 0.05, 0.1, 6);
-            const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-            const mesh = new THREE.Mesh(geometry, material);
-            controller.add(mesh);
-            
-            this.scene.add(controller);
-            this.controllers[i] = controller;
-        }
-    }
-    
-    async enterXR() {
-        try {
-            this.updateStatus(`Starte ${this.xrMode}-Session...`);
-            console.log('Requesting XR session:', this.xrMode);
-            
-            let sessionOptions = {};
-            
-            if (this.xrMode === 'immersive-ar') {
-                sessionOptions = {
-                    optionalFeatures: ['plane-detection', 'anchors', 'local-floor']
-                };
-            } else if (this.xrMode === 'immersive-vr') {
-                sessionOptions = {
-                    optionalFeatures: ['local-floor', 'bounded-floor']
-                };
-            }
-            
-            const session = await navigator.xr.requestSession(this.xrMode, sessionOptions);
-            console.log('XR session created successfully');
-            
-            this.xrSession = session;
-            
-            session.addEventListener('end', () => {
-                console.log('XR session ended');
-                this.xrSession = null;
-                this.updateStatus('XR-Session beendet');
-            });
-            
-            await this.renderer.xr.setSession(session);
-            console.log('Renderer XR session set');
-            
-            if (this.xrMode === 'immersive-ar') {
-                this.updateStatus('AR aktiv - Erkenne Ebenen...');
-                this.startPlaneDetection();
-            } else {
-                this.updateStatus('VR aktiv! Trigger drücken zum Werfen');
-            }
-            
-            this.animate();
-            
-        } catch (error) {
-            this.updateStatus(`${this.xrMode}-Fehler: ${error.message}`);
-            console.error('XR-Fehler:', error);
-        }
-    }
-    
-    startPlaneDetection() {
-        if (!this.xrSession) return;
         
-        this.xrSession.addEventListener('frameupdate', () => {
-            const frame = this.renderer.xr.getFrame();
-            if (!frame) return;
-            
-            const referenceSpace = this.renderer.xr.getReferenceSpace();
-            const detectedPlanes = frame.detectedPlanes;
-            
-            if (detectedPlanes) {
-                detectedPlanes.forEach((plane, planeId) => {
-                    if (!this.planeAnchors.has(planeId)) {
-                        this.addPlane(plane, referenceSpace);
-                        this.planeAnchors.set(planeId, plane);
-                    }
-                });
+        console.log('Canvas created:', this.width, 'x', this.height);
+    }
+    
+    setupControls() {
+        // Button click
+        this.enterVRButton.textContent = 'Ball werfen!';
+        this.enterVRButton.disabled = false;
+        this.enterVRButton.addEventListener('click', () => this.shootBall());
+        
+        // Canvas click
+        this.canvas.addEventListener('click', (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            this.shootBallAt(x, y);
+        });
+        
+        // Keyboard
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                this.shootBall();
             }
         });
+        
+        console.log('Controls setup complete');
     }
     
-    addPlane(plane, referenceSpace) {
-        try {
-            const pose = plane.planeSpace.getPose(referenceSpace);
-            if (!pose) return;
-            
-            const polygon = plane.polygon;
-            if (!polygon || polygon.length < 3) return;
-            
-            // Create visual representation
-            const shape = new THREE.Shape();
-            shape.moveTo(polygon[0].x, polygon[0].z);
-            
-            for (let i = 1; i < polygon.length; i++) {
-                shape.lineTo(polygon[i].x, polygon[i].z);
-            }
-            
-            const geometry = new THREE.ShapeGeometry(shape);
-            const material = new THREE.MeshBasicMaterial({
-                color: 0x0088ff,
-                transparent: true,
-                opacity: 0.3,
-                side: THREE.DoubleSide
-            });
-            
-            const planeMesh = new THREE.Mesh(geometry, material);
-            
-            // Set position and orientation
-            planeMesh.position.set(
-                pose.transform.position.x,
-                pose.transform.position.y,
-                pose.transform.position.z
-            );
-            
-            planeMesh.quaternion.set(
-                pose.transform.orientation.x,
-                pose.transform.orientation.y,
-                pose.transform.orientation.z,
-                pose.transform.orientation.w
-            );
-            
-            this.scene.add(planeMesh);
-            
-            // Create physics body
-            const planeShape = new CANNON.Plane();
-            const planeBody = new CANNON.Body({ mass: 0 });
-            planeBody.addShape(planeShape);
-            
-            planeBody.position.set(
-                pose.transform.position.x,
-                pose.transform.position.y,
-                pose.transform.position.z
-            );
-            
-            planeBody.quaternion.set(
-                pose.transform.orientation.x,
-                pose.transform.orientation.y,
-                pose.transform.orientation.z,
-                pose.transform.orientation.w
-            );
-            
-            this.world.addBody(planeBody);
-            
-            this.planes.push({
-                mesh: planeMesh,
-                body: planeBody,
-                plane: plane
-            });
-            
-            this.updateStatus(`${this.planes.length} Ebene(n) erkannt`);
-            
-        } catch (error) {
-            console.error('Fehler beim Hinzufügen der Ebene:', error);
-        }
+    shootBall() {
+        // Shoot from random position at top
+        const x = Math.random() * (this.width - 100) + 50;
+        this.shootBallAt(x, 50);
     }
     
-    onSelectStart(event, controllerIndex) {
-        this.shootBall(controllerIndex);
-    }
-    
-    onSelectEnd(event, controllerIndex) {
-        // Optional: Handle select end
-    }
-    
-    shootBall(controllerIndex) {
-        const controller = this.controllers[controllerIndex];
-        if (!controller) return;
-        
-        const ballGeometry = new THREE.SphereGeometry(0.05, 16, 16);
-        const ballMaterial = new THREE.MeshLambertMaterial({
-            color: Math.random() * 0xffffff
-        });
-        const ballMesh = new THREE.Mesh(ballGeometry, ballMaterial);
-        ballMesh.castShadow = true;
-        
-        // Get controller position and direction
-        const controllerMatrix = controller.matrixWorld;
-        const position = new THREE.Vector3();
-        const direction = new THREE.Vector3();
-        
-        position.setFromMatrixPosition(controllerMatrix);
-        direction.set(0, 0, -1).applyMatrix4(controllerMatrix).normalize();
-        
-        ballMesh.position.copy(position);
-        this.scene.add(ballMesh);
-        
-        // Create physics body with optimized properties for Quest 3
-        const ballShape = new CANNON.Sphere(0.05);
-        const ballBody = new CANNON.Body({ 
-            mass: 1,
-            material: new CANNON.Material({ friction: 0.3, restitution: 0.8 })
-        });
-        ballBody.addShape(ballShape);
-        
-        ballBody.position.set(position.x, position.y, position.z);
-        
-        // Apply initial velocity
-        const velocity = new CANNON.Vec3(
-            direction.x * 10,
-            direction.y * 10,
-            direction.z * 10
-        );
-        ballBody.velocity = velocity;
-        
-        this.world.addBody(ballBody);
-        
-        this.balls.push({
-            mesh: ballMesh,
-            body: ballBody,
+    shootBallAt(x, y) {
+        const ball = {
+            x: x,
+            y: y,
+            vx: (Math.random() - 0.5) * 10, // Random horizontal velocity
+            vy: Math.random() * 5 + 2,      // Downward velocity
+            radius: Math.random() * 15 + 10, // Random size
+            color: this.getRandomColor(),
+            bounce: 0.8,                     // Bounce damping
+            gravity: 0.5,                    // Gravity strength
             created: Date.now()
-        });
+        };
         
-        // Remove old balls (keep only last 20)
-        if (this.balls.length > 20) {
-            const oldBall = this.balls.shift();
-            this.scene.remove(oldBall.mesh);
-            this.world.removeBody(oldBall.body);
-            oldBall.mesh.geometry.dispose();
-            oldBall.mesh.material.dispose();
+        this.balls.push(ball);
+        console.log('Ball shot at', x, y);
+        
+        // Remove old balls (keep only last 30)
+        if (this.balls.length > 30) {
+            this.balls.shift();
         }
     }
     
-    animate() {
-        if (this.xrMode === 'desktop') {
-            // Desktop animation loop
-            const animate = () => {
-                requestAnimationFrame(animate);
-                this.render();
-            };
-            animate();
-        } else {
-            // XR animation loop
-            this.renderer.setAnimationLoop(() => this.render());
+    getRandomColor() {
+        const colors = [
+            '#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', 
+            '#feca57', '#ff9ff3', '#54a0ff', '#5f27cd',
+            '#00d2d3', '#ff9f43', '#c44569', '#f8b500'
+        ];
+        return colors[Math.floor(Math.random() * colors.length)];
+    }
+    
+    updateBalls() {
+        for (let i = this.balls.length - 1; i >= 0; i--) {
+            const ball = this.balls[i];
+            
+            // Apply gravity
+            ball.vy += ball.gravity;
+            
+            // Update position
+            ball.x += ball.vx;
+            ball.y += ball.vy;
+            
+            // Wall collision (left/right)
+            if (ball.x - ball.radius <= 0 || ball.x + ball.radius >= this.width) {
+                ball.vx *= -ball.bounce;
+                ball.x = Math.max(ball.radius, Math.min(this.width - ball.radius, ball.x));
+            }
+            
+            // Floor collision
+            if (ball.y + ball.radius >= this.height) {
+                ball.vy *= -ball.bounce;
+                ball.y = this.height - ball.radius;
+                
+                // Stop very small bounces
+                if (Math.abs(ball.vy) < 1) {
+                    ball.vy = 0;
+                }
+            }
+            
+            // Ceiling collision
+            if (ball.y - ball.radius <= 0) {
+                ball.vy *= -ball.bounce;
+                ball.y = ball.radius;
+            }
+            
+            // Add friction when on ground
+            if (ball.y + ball.radius >= this.height - 1) {
+                ball.vx *= 0.99;
+            }
+            
+            // Remove balls that are too old or have stopped moving
+            const age = Date.now() - ball.created;
+            const isMoving = Math.abs(ball.vx) > 0.1 || Math.abs(ball.vy) > 0.1;
+            
+            if (age > 20000 || (!isMoving && ball.y + ball.radius >= this.height - 1)) {
+                this.balls.splice(i, 1);
+            }
         }
     }
     
     render() {
-        if (!this.world) return;
+        // Clear canvas with gradient effect
+        this.ctx.clearRect(0, 0, this.width, this.height);
         
-        // Update physics with variable timestep for better performance
-        const deltaTime = Math.min(1/60, 1/30);
-        this.world.step(deltaTime);
-        
-        // Sync ball meshes with physics bodies
+        // Draw balls
         this.balls.forEach(ball => {
-            ball.mesh.position.copy(ball.body.position);
-            ball.mesh.quaternion.copy(ball.body.quaternion);
-        });
-        
-        // Remove balls that fell too far or are too old
-        this.balls = this.balls.filter(ball => {
-            const shouldRemove = ball.body.position.y < -10 || 
-                               Date.now() - ball.created > 30000;
+            this.ctx.save();
             
-            if (shouldRemove) {
-                this.scene.remove(ball.mesh);
-                this.world.removeBody(ball.body);
-                ball.mesh.geometry.dispose();
-                ball.mesh.material.dispose();
-                return false;
-            }
-            return true;
+            // Shadow
+            this.ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+            this.ctx.shadowBlur = 10;
+            this.ctx.shadowOffsetX = 3;
+            this.ctx.shadowOffsetY = 3;
+            
+            // Ball gradient
+            const gradient = this.ctx.createRadialGradient(
+                ball.x - ball.radius * 0.3, 
+                ball.y - ball.radius * 0.3, 
+                0,
+                ball.x, 
+                ball.y, 
+                ball.radius
+            );
+            gradient.addColorStop(0, ball.color);
+            gradient.addColorStop(1, this.darkenColor(ball.color, 0.3));
+            
+            this.ctx.fillStyle = gradient;
+            this.ctx.beginPath();
+            this.ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+            this.ctx.fill();
+            
+            // Highlight
+            this.ctx.shadowColor = 'transparent';
+            this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            this.ctx.beginPath();
+            this.ctx.arc(
+                ball.x - ball.radius * 0.3, 
+                ball.y - ball.radius * 0.3, 
+                ball.radius * 0.3, 
+                0, Math.PI * 2
+            );
+            this.ctx.fill();
+            
+            this.ctx.restore();
         });
         
-        this.renderer.render(this.scene, this.camera);
+        // Draw info
+        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        this.ctx.font = '16px Arial';
+        this.ctx.fillText(`Bälle: ${this.balls.length}`, 20, this.height - 30);
+    }
+    
+    darkenColor(color, amount) {
+        const hex = color.replace('#', '');
+        const r = Math.max(0, parseInt(hex.substr(0, 2), 16) * (1 - amount));
+        const g = Math.max(0, parseInt(hex.substr(2, 2), 16) * (1 - amount));
+        const b = Math.max(0, parseInt(hex.substr(4, 2), 16) * (1 - amount));
+        return `rgb(${Math.floor(r)}, ${Math.floor(g)}, ${Math.floor(b)})`;
+    }
+    
+    start() {
+        this.isRunning = true;
+        this.gameLoop();
+        console.log('Game started');
+    }
+    
+    gameLoop() {
+        if (!this.isRunning) return;
+        
+        this.updateBalls();
+        this.render();
+        
+        requestAnimationFrame(() => this.gameLoop());
     }
     
     updateStatus(message) {
@@ -505,14 +257,24 @@ class BallBouncerGame {
     }
 }
 
-// Initialize the game when the page loads
-console.log('=== SETTING UP GAME INITIALIZATION ===');
-
-window.addEventListener('load', () => {
-    console.log('Window loaded, creating game...');
+// Initialize the game when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM loaded, creating simple game...');
     try {
-        new BallBouncerGame();
+        new SimpleBallBouncerGame();
     } catch (error) {
         console.error('Error creating game:', error);
+    }
+});
+
+// Fallback for older browsers
+window.addEventListener('load', () => {
+    if (!document.querySelector('canvas')) {
+        console.log('Fallback initialization...');
+        try {
+            new SimpleBallBouncerGame();
+        } catch (error) {
+            console.error('Fallback error:', error);
+        }
     }
 });
