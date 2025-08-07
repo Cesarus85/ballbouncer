@@ -71,15 +71,41 @@
         let loadedLibraries = 0;
         const totalLibraries = 3;
         
+        console.log('Starting library loading check...');
+        
         function checkLibrariesLoaded() {
             loadedLibraries++;
+            console.log(`Library loaded (${loadedLibraries}/${totalLibraries})`);
+            console.log('THREE available:', typeof THREE !== 'undefined');
+            console.log('CANNON available:', typeof CANNON !== 'undefined');
+            
             if (loadedLibraries === totalLibraries) {
-                // All libraries loaded, now load the game
+                console.log('All libraries loaded, checking availability...');
+                console.log('THREE:', typeof THREE);
+                console.log('CANNON:', typeof CANNON);
+                console.log('navigator.xr:', typeof navigator.xr);
+                
+                // Give libraries a moment to fully initialize
+                setTimeout(() => {
+                    console.log('Loading game.js...');
+                    const script = document.createElement('script');
+                    script.src = 'game.js';
+                    script.onload = () => console.log('game.js loaded successfully');
+                    script.onerror = (e) => console.error('Failed to load game.js:', e);
+                    document.body.appendChild(script);
+                }, 100);
+            }
+        }
+        
+        // Fallback: Load game after 3 seconds if libraries don't load properly
+        setTimeout(() => {
+            if (loadedLibraries < totalLibraries) {
+                console.warn('Library loading timeout, forcing game load...');
                 const script = document.createElement('script');
                 script.src = 'game.js';
                 document.body.appendChild(script);
             }
-        }
+        }, 3000);
     </script>
 </body>
 </html>
