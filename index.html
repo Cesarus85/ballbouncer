@@ -63,9 +63,23 @@
     
     <button id="enterVR" disabled>VR starten</button>
     
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r155/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/cannon@0.20.0/build/cannon.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/webxr-polyfill@latest/build/webxr-polyfill.min.js"></script>
-    <script src="game.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r155/three.min.js" onload="checkLibrariesLoaded()"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cannon@0.20.0/build/cannon.min.js" onload="checkLibrariesLoaded()"></script>
+    <script src="https://cdn.jsdelivr.net/npm/webxr-polyfill@latest/build/webxr-polyfill.min.js" onload="checkLibrariesLoaded()"></script>
+    
+    <script>
+        let loadedLibraries = 0;
+        const totalLibraries = 3;
+        
+        function checkLibrariesLoaded() {
+            loadedLibraries++;
+            if (loadedLibraries === totalLibraries) {
+                // All libraries loaded, now load the game
+                const script = document.createElement('script');
+                script.src = 'game.js';
+                document.body.appendChild(script);
+            }
+        }
+    </script>
 </body>
 </html>
