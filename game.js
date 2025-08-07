@@ -21,15 +21,70 @@ class ImmersiveBallBouncer {
             return;
         }
         
+        // Immediately make buttons visible and functional
+        this.setupButtonsImmediately();
+        
+        // Then initialize AR capabilities
         this.init();
     }
     
-    async init() {
-        console.log('Initializing immersive AR...');
-        this.updateStatus('Prüfe WebXR AR Unterstützung...');
+    setupButtonsImmediately() {
+        console.log('Setting up buttons immediately...');
         
-        // Always setup both modes initially
+        // Make AR button immediately visible and functional
+        this.enterVRButton.textContent = 'AR starten';
+        this.enterVRButton.disabled = false;
+        this.enterVRButton.style.display = 'block';
+        this.enterVRButton.style.backgroundColor = '#4CAF50';
+        this.enterVRButton.style.position = 'absolute';
+        this.enterVRButton.style.bottom = '20px';
+        this.enterVRButton.style.left = '50%';
+        this.enterVRButton.style.transform = 'translateX(-50%)';
+        this.enterVRButton.style.zIndex = '1000';
+        
+        // Add 2D button immediately
+        if (!document.getElementById('shoot2D')) {
+            const shoot2DButton = document.createElement('button');
+            shoot2DButton.id = 'shoot2D';
+            shoot2DButton.textContent = '2D Ball werfen!';
+            shoot2DButton.style.position = 'absolute';
+            shoot2DButton.style.bottom = '80px';
+            shoot2DButton.style.left = '50%';
+            shoot2DButton.style.transform = 'translateX(-50%)';
+            shoot2DButton.style.padding = '12px 24px';
+            shoot2DButton.style.background = '#ff9500';
+            shoot2DButton.style.color = 'white';
+            shoot2DButton.style.border = 'none';
+            shoot2DButton.style.borderRadius = '5px';
+            shoot2DButton.style.fontSize = '16px';
+            shoot2DButton.style.cursor = 'pointer';
+            shoot2DButton.style.zIndex = '1000';
+            shoot2DButton.style.display = 'block';
+            
+            document.body.appendChild(shoot2DButton);
+            
+            shoot2DButton.addEventListener('click', () => {
+                console.log('2D button clicked immediately');
+                this.shoot2DBall();
+            });
+        }
+        
+        // Add AR button event listener immediately
+        this.enterVRButton.addEventListener('click', () => {
+            console.log('AR button clicked!');
+            this.startAR();
+        });
+        
+        // Setup 2D canvas immediately so balls work right away
         this.setup2D();
+        
+        this.updateStatus('Bereit! AR und 2D Buttons funktionieren');
+        console.log('Buttons are now visible and functional');
+    }
+    
+    async init() {
+        console.log('Initializing AR capabilities in background...');
+        this.updateStatus('Prüfe WebXR AR Unterstützung im Hintergrund...');
         
         try {
             // Check WebXR support with detailed logging
@@ -63,21 +118,18 @@ class ImmersiveBallBouncer {
             const isARSupported = await checkARSupport();
             
             if (isARSupported) {
-                console.log('AR is supported! Setting up WebGL...');
+                console.log('AR is supported! Pre-setting up WebGL...');
                 this.setupWebGL();
                 this.setupShaders();
-                this.setupARControls();
-                this.updateStatus('AR bereit! Klicke "AR starten" (2D läuft parallel)');
+                this.updateStatus('AR bereit! Beide Buttons funktionieren');
             } else {
-                console.log('AR not supported, but keeping AR button for testing');
-                this.setupARControls(); // Keep AR button visible for testing
-                this.updateStatus('AR nicht unterstützt - 2D Modus (AR Button zum Testen)');
+                console.log('AR not supported, but buttons work for testing');
+                this.updateStatus('AR nicht unterstützt - 2D funktioniert, AR Button für Tests');
             }
             
         } catch (error) {
             console.log('WebXR check failed:', error.message);
-            this.setupARControls(); // Still show AR button for debugging
-            this.updateStatus(`WebXR Fehler: ${error.message} - 2D Modus aktiv`);
+            this.updateStatus(`WebXR: ${error.message} - 2D und Test-AR verfügbar`);
         }
     }
     
