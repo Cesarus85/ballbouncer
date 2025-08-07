@@ -28,26 +28,56 @@ class ImmersiveBallBouncer {
         console.log('Initializing immersive AR...');
         this.updateStatus('Prüfe WebXR AR Unterstützung...');
         
+        // Always setup both modes initially
+        this.setup2D();
+        
         try {
-            // Check WebXR support
+            // Check WebXR support with detailed logging
+            console.log('Checking navigator.xr:', !!navigator.xr);
+            console.log('User agent:', navigator.userAgent);
+            console.log('Current URL protocol:', window.location.protocol);
+            
             if (!navigator.xr) {
-                throw new Error('WebXR nicht verfügbar - fallback zu 2D');
+                throw new Error('WebXR API nicht verfügbar');
             }
             
-            const isARSupported = await navigator.xr.isSessionSupported('immersive-ar');
-            if (!isARSupported) {
-                throw new Error('AR nicht unterstützt - fallback zu 2D');
+            console.log('WebXR API found, checking AR support...');
+            
+            // Check AR support with timeout
+            const checkARSupport = async () => {
+                try {
+                    const isARSupported = await Promise.race([
+                        navigator.xr.isSessionSupported('immersive-ar'),
+                        new Promise((_, reject) => 
+                            setTimeout(() => reject(new Error('AR check timeout')), 5000)
+                        )
+                    ]);
+                    console.log('AR support check result:', isARSupported);
+                    return isARSupported;
+                } catch (error) {
+                    console.log('AR support check failed:', error);
+                    return false;
+                }
+            };
+            
+            const isARSupported = await checkARSupport();
+            
+            if (isARSupported) {
+                console.log('AR is supported! Setting up WebGL...');
+                this.setupWebGL();
+                this.setupShaders();
+                this.setupARControls();
+                this.updateStatus('AR bereit! Klicke "AR starten" (2D läuft parallel)');
+            } else {
+                console.log('AR not supported, but keeping AR button for testing');
+                this.setupARControls(); // Keep AR button visible for testing
+                this.updateStatus('AR nicht unterstützt - 2D Modus (AR Button zum Testen)');
             }
-            
-            this.setupWebGL();
-            this.setupShaders();
-            this.setupControls();
-            
-            this.updateStatus('AR bereit! Klicke "AR starten"');
             
         } catch (error) {
-            console.log('AR nicht verfügbar, starte 2D Version:', error.message);
-            this.initFallback();
+            console.log('WebXR check failed:', error.message);
+            this.setupARControls(); // Still show AR button for debugging
+            this.updateStatus(`WebXR Fehler: ${error.message} - 2D Modus aktiv`);
         }
     }
     
@@ -263,50 +293,160 @@ class ImmersiveBallBouncer {
         console.log('Sphere geometry created');
     }
     
-    setupControls() {
+    setupARControls() {
+        // Always show both buttons
         this.enterVRButton.textContent = 'AR starten';
         this.enterVRButton.disabled = false;
-        this.enterVRButton.addEventListener('click', () => this.startAR());
+        this.enterVRButton.style.display = 'block';
+        this.enterVRButton.style.backgroundColor = '#4CAF50';
+        
+        // Remove any existing event listeners
+        this.enterVRButton.replaceWith(this.enterVRButton.cloneNode(true));
+        this.enterVRButton = document.getElementById('enterVR');
+        
+        this.enterVRButton.addEventListener('click', () => {
+            console.log('AR button clicked');
+            this.startAR();
+        });
+        
+        // Add a second button for 2D ball throwing
+        if (!document.getElementById('shoot2D')) {
+            const shoot2DButton = document.createElement('button');
+            shoot2DButton.id = 'shoot2D';
+            shoot2DButton.textContent = '2D Ball werfen';
+            shoot2DButton.style.position = 'absolute';
+            shoot2DButton.style.bottom = '80px';
+            shoot2DButton.style.left = '50%';
+            shoot2DButton.style.transform = 'translateX(-50%)';
+            shoot2DButton.style.padding = '12px 24px';
+            shoot2DButton.style.background = '#ff9500';
+            shoot2DButton.style.color = 'white';
+            shoot2DButton.style.border = 'none';
+            shoot2DButton.style.borderRadius = '5px';
+            shoot2DButton.style.fontSize = '16px';
+            shoot2DButton.style.cursor = 'pointer';
+            shoot2DButton.style.zIndex = '200';
+            
+            document.body.appendChild(shoot2DButton);
+            
+            shoot2DButton.addEventListener('click', () => {
+                console.log('2D shoot button clicked');
+                this.shoot2DBall();
+            });
+        }
+        
+        console.log('AR controls setup complete');
     }
     
     async startAR() {
+        console.log('=== STARTING AR SESSION ===');
+        
         try {
             this.updateStatus('Starte AR Session...');
             
-            this.xrSession = await navigator.xr.requestSession('immersive-ar', {
-                requiredFeatures: ['local'],
-                optionalFeatures: ['plane-detection', 'anchors', 'hit-test']
-            });
+            // Check if WebXR is available
+            if (!navigator.xr) {
+                throw new Error('WebXR nicht verfügbar auf diesem Gerät/Browser');
+            }
             
-            console.log('AR session created');
+            console.log('Requesting AR session with features...');
             
-            // Setup session
+            // Try different feature combinations
+            let sessionConfig = {
+                optionalFeatures: ['local-floor', 'bounded-floor', 'plane-detection', 'anchors', 'hit-test']
+            };
+            
+            let session = null;
+            
+            try {
+                // Try full featured AR
+                session = await navigator.xr.requestSession('immersive-ar', sessionConfig);
+                console.log('Full-featured AR session created');
+            } catch (fullError) {
+                console.log('Full-featured AR failed:', fullError);
+                
+                try {
+                    // Try basic AR
+                    sessionConfig = { optionalFeatures: ['local'] };
+                    session = await navigator.xr.requestSession('immersive-ar', sessionConfig);
+                    console.log('Basic AR session created');
+                } catch (basicError) {
+                    console.log('Basic AR failed:', basicError);
+                    
+                    try {
+                        // Try minimal AR
+                        session = await navigator.xr.requestSession('immersive-ar');
+                        console.log('Minimal AR session created');
+                    } catch (minimalError) {
+                        console.log('Minimal AR failed:', minimalError);
+                        throw new Error(`AR Session konnte nicht gestartet werden: ${minimalError.message}`);
+                    }
+                }
+            }
+            
+            this.xrSession = session;
+            
+            // Setup WebGL if not already done
+            if (!this.gl) {
+                console.log('Setting up WebGL for AR...');
+                this.setupWebGL();
+                this.setupShaders();
+            }
+            
+            console.log('Making GL XR compatible...');
             await this.gl.makeXRCompatible();
+            
+            console.log('Creating XR layer...');
             const xrLayer = new XRWebGLLayer(this.xrSession, this.gl);
             await this.xrSession.updateRenderState({ baseLayer: xrLayer });
             
-            // Get reference spaces
-            this.xrRefSpace = await this.xrSession.requestReferenceSpace('local');
+            console.log('Requesting reference spaces...');
+            // Try different reference spaces
+            try {
+                this.xrRefSpace = await this.xrSession.requestReferenceSpace('local-floor');
+                console.log('Using local-floor reference space');
+            } catch (floorError) {
+                console.log('local-floor failed, trying local:', floorError);
+                try {
+                    this.xrRefSpace = await this.xrSession.requestReferenceSpace('local');
+                    console.log('Using local reference space');
+                } catch (localError) {
+                    console.log('local failed, trying viewer:', localError);
+                    this.xrRefSpace = await this.xrSession.requestReferenceSpace('viewer');
+                    console.log('Using viewer reference space');
+                }
+            }
+            
             this.xrViewerSpace = await this.xrSession.requestReferenceSpace('viewer');
             
             // Setup controllers
+            console.log('Setting up XR controllers...');
             this.setupXRControllers();
             
             // Start render loop
+            console.log('Starting XR render loop...');
             this.xrSession.requestAnimationFrame((time, frame) => this.onXRFrame(time, frame));
             
-            this.updateStatus('AR aktiv! Trigger zum Werfen, Ebenen werden erkannt...');
+            this.updateStatus('AR aktiv! Trigger zum Werfen, schaue dich um für Ebenenerkennung...');
+            console.log('=== AR SESSION STARTED SUCCESSFULLY ===');
             
             // Handle session end
             this.xrSession.addEventListener('end', () => {
+                console.log('AR session ended');
                 this.xrSession = null;
-                this.updateStatus('AR Session beendet');
+                this.updateStatus('AR Session beendet - 2D Modus aktiv');
                 this.enterVRButton.textContent = 'AR starten';
             });
             
         } catch (error) {
-            this.updateStatus('AR Fehler: ' + error.message);
-            console.error('AR Start Fehler:', error);
+            const errorMsg = `AR Fehler: ${error.message}`;
+            this.updateStatus(errorMsg);
+            console.error('=== AR START FAILED ===');
+            console.error('Error details:', error);
+            console.error('Stack:', error.stack);
+            
+            // Show detailed error info
+            alert(`AR konnte nicht gestartet werden:\n\n${error.message}\n\nFür AR benötigst du:\n- Ein AR-fähiges Gerät (Meta Quest, etc.)\n- Einen AR-kompatiblen Browser\n- HTTPS-Verbindung\n\nDer 2D-Modus funktioniert weiterhin.`);
         }
     }
     
