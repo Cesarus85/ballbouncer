@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebXR AR – Bälle schießen & abprallen</title>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #overlay {
+      position: fixed; inset: 0; pointer-events: none; display:flex; flex-direction:column; justify-content:space-between;
+      padding: 12px; gap: 12px; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.8);
+    }
+    .toolbar { display:flex; gap:8px; pointer-events:auto; flex-wrap:wrap; }
+    button { padding:10px 12px; border-radius:10px; border:0; background:#1a73e8; color:#fff; font-weight:600; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,.25); }
+    button.secondary { background: rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.2); }
+    #log { pointer-events:auto; background:rgba(0,0,0,.4); border-radius:10px; padding:8px 10px; font-size:12px; }
+    #status { font-weight:600; }
+    .hint { font-size:12px; opacity:.85; }
+  </style>
+</head>
+<body>
+  <!-- UI that can be shown inside AR with WebXR DOM Overlay -->
+  <div id="overlay">
+    <div class="toolbar">
+      <button id="btnStart">Start AR</button>
+      <button id="btnPlaceFloor" class="secondary" title="Platziere einen großen Boden an der Reticle-Position">Boden platzieren</button>
+      <button id="btnPlaceWall" class="secondary" title="Platziere eine Wand an der Reticle-Position">Wand platzieren</button>
+      <button id="btnClear" class="secondary" title="Löscht entfernte Bälle">Bälle aufräumen</button>
+    </div>
+    <div id="log">
+      <div id="status">Bereit</div>
+      <div>Trefferhilfe: Richte den Ring auf eine Fläche (Hit-Test).</div>
+      <div class="hint">🕹️ Controller/Trigger oder Bildschirmtippen: Ball schießen · Bälle prallen an Boden/Wänden ab</div>
+      <div class="hint">📐 Optional: Automatische Ebenenerkennung, wenn vom Browser/Headset unterstützt.</div>
+      <div>Aktive Bälle: <span id="ballCount">0</span></div>
+    </div>
+  </div>
+
+  <script type="module">
+    // --- Imports ---
+    import * as THREE from 'https://unpkg.com/three@0.165.0/build/three.module.js';
+    import { ARButton } from 'https://unpkg.com/three@0.165.0/examples/jsm/webxr/ARButton.js';
+    import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js';
+
+    // --- DOM helpers ---
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+    const ballCountEl = $('ballCount');
+
+    // --- Three.js setup ---
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true; // Enable WebXR
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+
+    // Lighting for shaded balls
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(1, 2, 1);
+    scene.add(dir);
+
+    // Reticle to show hit-test position
+    const reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI/2),
+      new THREE.MeshBasicMaterial({ color: 0x00ffcc, side: THREE.DoubleSide })
+    );
+    reticle.matrixAutoUpdate = false;
+    reticle.visible = false;
+    scene.add(reticle);
+
+    // --- Physics (cannon-es) ---
+    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+    world.allowSleep = true;
+
+    const defaultMat = new CANNON.Material('default');
+    const bouncyMat = new CANNON.Material('bouncy');
+    world.defaultContactMaterial = new CANNON.ContactMaterial(defaultMat, defaultMat, { friction: 0.4, restitution: 0.2 });
+    world.addContactMaterial(new CANNON.ContactMaterial(bouncyMat, defaultMat, { friction: 0.3, restitution: 0.75 }));
+    world.addContactMaterial(new CANNON.ContactMaterial(bouncyMat, bouncyMat, { friction: 0.2, restitution: 0.85 }));
+
+    const balls = []; // { mesh, body, bornAt }
+
+    function spawnBall(origin, direction) {
+      // Visual sphere
+      const radius = 0.06; // 6 cm
+      const geo = new THREE.SphereGeometry(radius, 24, 24);
+      const mat = new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.4 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+
+      // Randomize color a bit for fun
+      mesh.material.color.setHSL(Math.random(), 0.6, 0.5);
+      mesh.position.copy(origin);
+      scene.add(mesh);
+
+      // Physics body
+      const shape = new CANNON.Sphere(radius);
+      const body = new CANNON.Body({ mass: 0.08, shape, material: bouncyMat, linearDamping: 0.01, angularDamping: 0.01 });
+      body.position.set(origin.x, origin.y, origin.z);
+      const speed = 6 + Math.random()*2; // m/s
+      body.velocity.set(direction.x * speed, direction.y * speed, direction.z * speed);
+      world.addBody(body);
+
+      balls.push({ mesh, body, bornAt: performance.now() });
+      ballCountEl.textContent = String(balls.length);
+
+      // Keep the list tidy
+      if (balls.length > 80) removeOldestBall();
+    }
+
+    function removeOldestBall() {
+      const b = balls.shift();
+      if (!b) return;
+      world.removeBody(b.body);
+      scene.remove(b.mesh);
+      ballCountEl.textContent = String(balls.length);
+    }
+
+    // --- Static colliders (floor/walls) ---
+    const colliders = []; // { mesh, body, kind }
+
+    function addFloorAt(matrixWorld) {
+      // A large thin box to represent the floor
+      const size = { x: 10, y: 0.1, z: 10 };
+      const geo = new THREE.BoxGeometry(size.x, size.y, size.z);
+      const mat = new THREE.MeshBasicMaterial({ color: 0x00aa55, transparent: true, opacity: 0.15 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.matrixAutoUpdate = false;
+      mesh.applyMatrix4(matrixWorld);
+      scene.add(mesh);
+
+      const half = new CANNON.Vec3(size.x*0.5, size.y*0.5, size.z*0.5);
+      const shape = new CANNON.Box(half);
+      const body = new CANNON.Body({ mass: 0, shape, material: defaultMat });
+      // Extract position + rotation from matrix
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      const scl = new THREE.Vector3();
+      new THREE.Matrix4().copy(mesh.matrixWorld).decompose(pos, quat, scl);
+      body.position.set(pos.x, pos.y, pos.z);
+      body.quaternion.set(quat.x, quat.y, quat.z, quat.w);
+      world.addBody(body);
+
+      colliders.push({ mesh, body, kind: 'floor' });
+      toast('Boden platziert.');
+    }
+
+    function addWallAt(matrixWorld) {
+      // A wide vertical thin box to represent a wall
+      const size = { x: 8, y: 3, z: 0.08 };
+      const geo = new THREE.BoxGeometry(size.x, size.y, size.z);
+      const mat = new THREE.MeshBasicMaterial({ color: 0x3366ff, transparent: true, opacity: 0.15 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.matrixAutoUpdate = false;
+      mesh.applyMatrix4(matrixWorld);
+      scene.add(mesh);
+
+      const half = new CANNON.Vec3(size.x*0.5, size.y*0.5, size.z*0.5);
+      const shape = new CANNON.Box(half);
+      const body = new CANNON.Body({ mass: 0, shape, material: defaultMat });
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      const scl = new THREE.Vector3();
+      new THREE.Matrix4().copy(mesh.matrixWorld).decompose(pos, quat, scl);
+      body.position.set(pos.x, pos.y, pos.z);
+      body.quaternion.set(quat.x, quat.y, quat.z, quat.w);
+      world.addBody(body);
+
+      colliders.push({ mesh, body, kind: 'wall' });
+      toast('Wand platziert.');
+    }
+
+    function toast(msg) { statusEl.textContent = msg; setTimeout(()=> statusEl.textContent = 'Läuft…', 1500); }
+
+    // --- WebXR session setup ---
+    let xrRefSpace = null;
+    let xrHitTestSource = null;
+
+    function onSessionStarted(session) {
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.xr.setSession(session);
+      statusEl.textContent = 'AR gestartet';
+
+      // Controllers: shoot on select
+      const controller = renderer.xr.getController(0);
+      controller.addEventListener('selectstart', shootFromViewer);
+      scene.add(controller);
+
+      // Hit-Test setup
+      session.requestReferenceSpace('viewer').then((viewerSpace) => {
+        session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+          xrHitTestSource = source;
+        });
+      });
+      session.requestReferenceSpace('local').then((ref) => { xrRefSpace = ref; });
+
+      // Cleanup on end
+      session.addEventListener('end', () => {
+        xrHitTestSource = null; xrRefSpace = null; reticle.visible = false;
+        statusEl.textContent = 'Sitzung beendet';
+      });
+
+      renderer.setAnimationLoop(onXRFrame);
+    }
+
+    function shootFromViewer() {
+      const xrFrame = renderer.xr.getFrame();
+      const refSpace = renderer.xr.getReferenceSpace();
+      if (!xrFrame || !refSpace) return;
+
+      const pose = xrFrame.getViewerPose(refSpace);
+      if (!pose) return;
+
+      const t = pose.transform; // XRPoseTransform
+      // Build a matrix to extract forward vector
+      const mat = new THREE.Matrix4();
+      mat.fromArray(t.matrix);
+      const pos = new THREE.Vector3().setFromMatrixPosition(mat);
+      const quat = new THREE.Quaternion().setFromRotationMatrix(mat);
+      const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(quat).normalize();
+
+      const origin = pos.clone().add(dir.clone().multiplyScalar(0.2));
+      spawnBall(origin, dir);
+    }
+
+    // Button: place floor at reticle
+    $('btnPlaceFloor').addEventListener('click', () => {
+      if (!reticle.visible) { toast('Kein Hit-Test vorhanden.'); return; }
+      addFloorAt(reticle.matrixWorld);
+    });
+
+    // Button: place wall at reticle (facing current reticle orientation)
+    $('btnPlaceWall').addEventListener('click', () => {
+      if (!reticle.visible) { toast('Kein Hit-Test vorhanden.'); return; }
+      // For a nice default: rotate the wall so its normal faces the camera
+      const m = new THREE.Matrix4(); m.copy(reticle.matrixWorld);
+      // Attach an extra rotation so the thin side (Z) faces forward
+      const rot = new THREE.Matrix4().makeRotationY(Math.PI / 2);
+      m.multiply(rot);
+      addWallAt(m);
+    });
+
+    // Button: clear far/old balls
+    $('btnClear').addEventListener('click', () => {
+      const now = performance.now();
+      for (let i = balls.length - 1; i >= 0; i--) {
+        const b = balls[i];
+        const tooOld = now - b.bornAt > 45_000; // older than 45s
+        const tooFar = b.body.position.length() > 40; // > 40m away
+        if (tooOld || tooFar || b.body.position.y < -10) {
+          world.removeBody(b.body); scene.remove(b.mesh); balls.splice(i, 1);
+        }
+      }
+      ballCountEl.textContent = String(balls.length);
+      toast('Aufgeräumt.');
+    });
+
+    // --- ARButton to start session ---
+    const arButtonOptions = {
+      requiredFeatures: ['hit-test'],
+      optionalFeatures: ['dom-overlay', 'plane-detection', 'anchors'],
+      domOverlay: { root: document.body.querySelector('#overlay') }
+    };
+
+    const startBtn = $('btnStart');
+    startBtn.addEventListener('click', async () => {
+      try {
+        const session = await navigator.xr.requestSession('immersive-ar', arButtonOptions);
+        onSessionStarted(session);
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = 'AR nicht verfügbar: ' + err.message;
+      }
+    });
+
+    // --- Frame loop ---
+    let lastTime = performance.now();
+
+    function onXRFrame(t, frame) {
+      const dt = Math.min(1/30, (t - lastTime) / 1000); // clamp for stability
+      lastTime = t;
+
+      // Physics step
+      world.step(1/60, dt, 3);
+
+      // Sync physics -> three
+      for (const b of balls) {
+        b.mesh.position.copy(b.body.position);
+        b.mesh.quaternion.copy(b.body.quaternion);
+      }
+
+      // Remove lost/old balls passively
+      for (let i = balls.length - 1; i >= 0; i--) {
+        const bb = balls[i];
+        if (bb.body.position.y < -20 || performance.now() - bb.bornAt > 60_000) {
+          world.removeBody(bb.body); scene.remove(bb.mesh); balls.splice(i, 1);
+        }
+      }
+      ballCountEl.textContent = String(balls.length);
+
+      // Update reticle via hit-test
+      const session = renderer.xr.getSession();
+      if (xrHitTestSource && xrRefSpace && frame) {
+        const hits = frame.getHitTestResults(xrHitTestSource);
+        if (hits.length > 0) {
+          const hit = hits[0];
+          const pose = hit.getPose(xrRefSpace);
+          if (pose) {
+            reticle.visible = true;
+            reticle.matrix.fromArray(pose.transform.matrix);
+          }
+        } else {
+          reticle.visible = false;
+        }
+      }
+
+      // Experimental plane detection: add helpful colliders if available
+      try {
+        const planes = frame.worldInformation?.detectedPlanes; // XRPlaneSet (experimental)
+        if (planes && xrRefSpace) {
+          for (const plane of planes) {
+            if (!plane._threeHelper) {
+              // Derive orientation from plane-space transform
+              const planePose = frame.getPose(plane.planeSpace, xrRefSpace);
+              if (!planePose) continue;
+              const m4 = new THREE.Matrix4().fromArray(planePose.transform.matrix);
+              const q = new THREE.Quaternion().setFromRotationMatrix(m4);
+              const normal = new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize();
+              const horizontal = Math.abs(normal.y) > 0.7;
+
+              if (horizontal) addFloorAt(m4);
+              else addWallAt(m4);
+
+              plane._threeHelper = true; // mark so we don't add duplicates constantly
+            }
+          }
+        }
+      } catch(e) {
+        // Ignore if not supported
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    // Resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Fallback instruction
+    statusEl.textContent = navigator.xr ? 'Bereit – tippe auf Start AR' : 'WebXR nicht verfügbar';
+  </script>
+</body>
+</html>
