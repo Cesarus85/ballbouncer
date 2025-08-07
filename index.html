@@ -1,237 +1,71 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="utf-8">
-  <title>WebXR Ball Bouncer v1.3</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body { margin: 0; overflow: hidden; }
-    #info {
-      position: absolute;
-      top: 10px;
-      left: 10px;
-      color: white;
-      font-family: sans-serif;
-      z-index: 10;
-      text-shadow: 0 0 4px #000;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebXR Ball Bouncer</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#000000">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: black;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 14px;
+            z-index: 100;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        
+        #enterVR {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        
+        #enterVR:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+    </style>
 </head>
 <body>
-  <div id="info">
-    Tippe/Drücke, um einen Ball zu werfen<br>
-    <span id="debug">Ebenen: 0, Bälle: 0</span>
-  </div>
-  <script type="module">
-    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.163/build/three.module.js';
-    import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.163/examples/jsm/webxr/ARButton.js';
-
-    let camera, scene, renderer;
-    let controller;
-    const balls  = [];
-    const planes = new Map(); // XRPlane ➜ THREE.Mesh
-
-    const gravity     = -9.81; // m/s²
-    const restitution = 0.8;   // 1 = perfekt elastisch
-
-    let prevTime = null;
-
-    init();
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    function init() {
-      scene  = new THREE.Scene();
-      camera = new THREE.PerspectiveCamera();
-
-      const hemi = new THREE.HemisphereLight(0xffffff, 0x666666, 1);
-      scene.add(hemi);
-
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setPixelRatio(window.devicePixelRatio);
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.xr.enabled = true;
-      document.body.appendChild(renderer.domElement);
-
-      // AR‑Button: Plane‑Detection & Passthrough
-      document.body.appendChild(ARButton.createButton(renderer, {
-        requiredFeatures : [ 'hit-test', 'plane-detection' ],
-        optionalFeatures : [ 'dom-overlay' ],
-        domOverlay       : { root: document.body }
-      }));
-
-      // Controller ⇒ Ball erzeugen
-      controller = renderer.xr.getController(0);
-      controller.addEventListener('select', onSelect);
-      scene.add(controller);
-
-      renderer.setAnimationLoop(render);
-      window.addEventListener('resize', onResize);
-    }
-
-    function onResize() {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    //  ▄▄▄▄▄  Ball werfen
-    function onSelect() {
-      const radius    = 0.05;
-      const geometry  = new THREE.SphereGeometry(radius, 32, 32);
-      const material  = new THREE.MeshStandardMaterial({ color: 0xff5533 });
-      const ball      = new THREE.Mesh(geometry, material);
-
-      // Spawn vor der Kamera
-      const xrCam = renderer.xr.getCamera(camera);
-      const dir   = new THREE.Vector3(0, 0, -1).applyQuaternion(xrCam.quaternion).normalize();
-      ball.position.copy(xrCam.position).add(dir.clone().multiplyScalar(0.25));
-
-      // Velocity (3 m/s)
-      ball.userData.velocity = dir.clone().multiplyScalar(3);
-      ball.userData.radius   = radius;
-      balls.push(ball);
-      scene.add(ball);
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    //  ██████  Plane Handling
-    function syncPlanes(frame, refSpace) {
-      const { planes: xrPlanes } = frame.worldInformation ?? {};
-      if (!xrPlanes) return;
-
-      xrPlanes.forEach((xrPlane) => {
-        if (!planes.has(xrPlane)) {
-          const mesh = createPlaneMesh(xrPlane);
-          planes.set(xrPlane, mesh);
-          scene.add(mesh);
-        }
-
-        const pose = frame.getPose(xrPlane.planeSpace, refSpace);
-        if (pose) {
-          const mesh = planes.get(xrPlane);
-          mesh.position.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
-          mesh.quaternion.set(pose.transform.orientation.x, pose.transform.orientation.y, pose.transform.orientation.z, pose.transform.orientation.w);
-        }
-      });
-    }
-
-    // Plane‑Mesh: halbtransparent zum Debuggen – Größe = grobes Bounding‑Rect
-    function createPlaneMesh(xrPlane) {
-      // Versuche Größe abzuleiten (Fallback 2×2 m)
-      let sizeX = 2, sizeZ = 2;
-      if (xrPlane.polygon && xrPlane.polygon.length >= 4) {
-        const xs = xrPlane.polygon.map(p => p.x);
-        const zs = xrPlane.polygon.map(p => p.z);
-        sizeX = Math.max(...xs) - Math.min(...xs);
-        sizeZ = Math.max(...zs) - Math.min(...zs);
-      }
-      const geometry = new THREE.PlaneGeometry(sizeX, sizeZ);
-      const material = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.05, side: THREE.DoubleSide });
-      const mesh = new THREE.Mesh(geometry, material);
-      
-      // Speichere XRPlane-Referenz für korrekte Normalenberechnung
-      mesh.userData.xrPlane = xrPlane;
-      return mesh;
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    //  ▀▀▀▀▀▀  Physik‑Simulation (mit Debug)
-    function simulate(delta) {
-      // Debug-Info aktualisieren
-      document.getElementById('debug').textContent = `Ebenen: ${planes.size}, Bälle: ${balls.length}`;
-
-      for (let i = balls.length - 1; i >= 0; i--) {
-        const ball = balls[i];
-
-        // Gravitation ➜ v = v + g·Δt
-        ball.userData.velocity.y += gravity * delta;
-
-        // Einfache Kollisionsprüfung ohne komplexe Loops
-        const nextPos = ball.position.clone().addScaledVector(ball.userData.velocity, delta);
-        let collided = false;
-
-        // Prüfe alle Ebenen
-        planes.forEach((mesh, xrPlane) => {
-          if (collided) return; // Erste Kollision verwenden
-
-          // Teste verschiedene Normale-Orientierungen
-          const normals = [
-            new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.quaternion), // Y-up (Boden)
-            new THREE.Vector3(0, 0, 1).applyQuaternion(mesh.quaternion), // Z-forward
-            new THREE.Vector3(1, 0, 0).applyQuaternion(mesh.quaternion), // X-right
-            new THREE.Vector3(0, -1, 0).applyQuaternion(mesh.quaternion), // Y-down (Decke)
-            new THREE.Vector3(0, 0, -1).applyQuaternion(mesh.quaternion), // Z-back
-            new THREE.Vector3(-1, 0, 0).applyQuaternion(mesh.quaternion)  // X-left
-          ];
-
-          for (const normal of normals) {
-            const planePt = mesh.position;
-            
-            // Distanzen zur Ebene
-            const currentDist = new THREE.Vector3().subVectors(ball.position, planePt).dot(normal);
-            const nextDist = new THREE.Vector3().subVectors(nextPos, planePt).dot(normal);
-            
-            // Kollision wenn Ball die Ebene durchquert und nah genug ist
-            if (currentDist > ball.userData.radius && nextDist <= ball.userData.radius && Math.abs(nextDist) < 1.0) {
-              console.log('Kollision erkannt!', {
-                currentDist,
-                nextDist,
-                normal: normal.toArray(),
-                ballPos: ball.position.toArray(),
-                planePos: planePt.toArray()
-              });
-
-              // Direkte Reflexion der Geschwindigkeit
-              const vel = ball.userData.velocity;
-              const vDotN = vel.dot(normal);
-              if (vDotN < 0) {
-                vel.addScaledVector(normal, -2 * vDotN * restitution);
-                
-                // Ball oberhalb der Ebene positionieren
-                ball.position.copy(planePt).addScaledVector(normal, ball.userData.radius + 0.01);
-                collided = true;
-                break;
-              }
-            }
-          }
-        });
-
-        // Position nur aktualisieren wenn keine Kollision
-        if (!collided) {
-          ball.position.copy(nextPos);
-        }
-
-        // Einfacher Boden-Fallback falls keine Ebenen erkannt werden
-        if (planes.size === 0 && ball.position.y <= 0.05) {
-          if (ball.userData.velocity.y < 0) {
-            ball.userData.velocity.y = -ball.userData.velocity.y * restitution;
-            ball.position.y = 0.05;
-            console.log('Fallback-Boden Kollision bei y=0');
-          }
-        }
-
-        // Lebensdauer‑Cleanup
-        if (ball.position.y < -5) {
-          scene.remove(ball);
-          balls.splice(i, 1);
-        }
-      }
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    function render(time, frame) {
-      const delta = prevTime === null ? 0 : (time - prevTime) / 1000;
-      prevTime = time;
-
-      if (frame) {
-        const refSpace = renderer.xr.getReferenceSpace();
-        syncPlanes(frame, refSpace);
-      }
-
-      simulate(delta);
-      renderer.render(scene, camera);
-    }
-  </script>
+    <div id="info">
+        <div>WebXR Ball Bouncer</div>
+        <div id="status">Initialisiere...</div>
+    </div>
+    
+    <button id="enterVR" disabled>VR starten</button>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r155/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cannon@0.20.0/build/cannon.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/webxr-polyfill@latest/build/webxr-polyfill.min.js"></script>
+    <script src="game.js"></script>
 </body>
 </html>
