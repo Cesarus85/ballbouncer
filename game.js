@@ -508,46 +508,11 @@ class BallBouncerGame {
 // Initialize the game when the page loads
 console.log('=== SETTING UP GAME INITIALIZATION ===');
 
-function initializeGame() {
-    console.log('DOM loaded, initializing game...');
-    console.log('Document ready state:', document.readyState);
-    
-    // Check if required elements exist
-    const statusElement = document.getElementById('status');
-    const enterVRButton = document.getElementById('enterVR');
-    
-    console.log('Status element exists:', !!statusElement);
-    console.log('VR button exists:', !!enterVRButton);
-    
-    if (statusElement && enterVRButton) {
-        console.log('Creating game instance...');
-        try {
-            new BallBouncerGame();
-        } catch (error) {
-            console.error('Error creating game:', error);
-        }
-    } else {
-        console.error('Required DOM elements not found, retrying in 500ms...');
-        setTimeout(initializeGame, 500);
-    }
-}
-
-// Try multiple initialization methods
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeGame);
-} else {
-    // DOM already loaded
-    setTimeout(initializeGame, 100);
-}
-
-// Fallback
 window.addEventListener('load', () => {
-    console.log('Window loaded, checking if game was initialized...');
-    setTimeout(() => {
-        if (!document.getElementById('status').textContent.includes('Desktop') && 
-            !document.getElementById('status').textContent.includes('Bereit')) {
-            console.log('Game seems not initialized, trying again...');
-            initializeGame();
-        }
-    }, 1000);
+    console.log('Window loaded, creating game...');
+    try {
+        new BallBouncerGame();
+    } catch (error) {
+        console.error('Error creating game:', error);
+    }
 });
