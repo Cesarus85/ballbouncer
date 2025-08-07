@@ -19,29 +19,150 @@ class BallBouncerGame {
     async init() {
         try {
             this.updateStatus('Prüfe WebXR Unterstützung...');
+            console.log('Starting initialization...');
             
             if (!navigator.xr) {
-                throw new Error('WebXR wird nicht unterstützt');
+                console.log('WebXR not available, falling back to desktop mode');
+                this.initDesktopMode();
+                return;
             }
             
+            console.log('WebXR available, checking AR support...');
             const isSupported = await navigator.xr.isSessionSupported('immersive-ar');
+            console.log('AR supported:', isSupported);
+            
             if (!isSupported) {
-                throw new Error('AR-Modus wird nicht unterstützt');
+                console.log('AR not supported, trying VR...');
+                const isVRSupported = await navigator.xr.isSessionSupported('immersive-vr');
+                console.log('VR supported:', isVRSupported);
+                
+                if (!isVRSupported) {
+                    console.log('Neither AR nor VR supported, falling back to desktop');
+                    this.initDesktopMode();
+                    return;
+                }
+                this.xrMode = 'immersive-vr';
+            } else {
+                this.xrMode = 'immersive-ar';
             }
             
+            console.log('Setting up scene...');
             this.setupScene();
+            console.log('Setting up physics...');
             this.setupPhysics();
+            console.log('Setting up renderer...');
             this.setupRenderer();
+            console.log('Setting up controllers...');
             this.setupControllers();
             
             this.enterVRButton.disabled = false;
             this.enterVRButton.addEventListener('click', () => this.enterXR());
             
-            this.updateStatus('Bereit! Klicke "VR starten"');
+            this.updateStatus(`Bereit! Klicke "VR starten" (${this.xrMode})`);
+            console.log('Initialization complete');
             
         } catch (error) {
             this.updateStatus('Fehler: ' + error.message);
             console.error('Initialisierungsfehler:', error);
+            this.initDesktopMode();
+        }
+    }
+    
+    initDesktopMode() {
+        console.log('Initializing desktop mode...');
+        this.xrMode = 'desktop';
+        
+        this.setupScene();
+        this.setupPhysics();
+        this.setupRenderer();
+        
+        // Add basic camera controls for desktop
+        this.camera.position.set(0, 1.6, 3);
+        
+        // Add a ground plane for desktop mode
+        this.addDesktopGround();
+        
+        // Change button text and functionality
+        this.enterVRButton.textContent = 'Bälle werfen';
+        this.enterVRButton.disabled = false;
+        this.enterVRButton.addEventListener('click', () => this.shootBallDesktop());
+        
+        this.updateStatus('Desktop-Modus bereit! Klicke zum Werfen');
+        
+        // Start animation loop
+        this.animate();
+    }
+    
+    addDesktopGround() {
+        // Visual ground
+        const groundGeometry = new THREE.PlaneGeometry(10, 10);
+        const groundMaterial = new THREE.MeshLambertMaterial({ 
+            color: 0x808080,
+            transparent: true,
+            opacity: 0.5 
+        });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -1;
+        this.scene.add(ground);
+        
+        // Physics ground
+        const groundShape = new CANNON.Plane();
+        const groundBody = new CANNON.Body({ mass: 0 });
+        groundBody.addShape(groundShape);
+        groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+        groundBody.position.set(0, -1, 0);
+        this.world.addBody(groundBody);
+    }
+    
+    shootBallDesktop() {
+        const ballGeometry = new THREE.SphereGeometry(0.05, 16, 16);
+        const ballMaterial = new THREE.MeshLambertMaterial({
+            color: Math.random() * 0xffffff
+        });
+        const ballMesh = new THREE.Mesh(ballGeometry, ballMaterial);
+        ballMesh.castShadow = true;
+        
+        // Random starting position and direction for desktop
+        const startX = (Math.random() - 0.5) * 2;
+        const startY = 2;
+        const startZ = 2;
+        
+        ballMesh.position.set(startX, startY, startZ);
+        this.scene.add(ballMesh);
+        
+        // Physics body
+        const ballShape = new CANNON.Sphere(0.05);
+        const ballBody = new CANNON.Body({ 
+            mass: 1,
+            material: new CANNON.Material({ friction: 0.3, restitution: 0.8 })
+        });
+        ballBody.addShape(ballShape);
+        ballBody.position.set(startX, startY, startZ);
+        
+        // Random velocity
+        const velocity = new CANNON.Vec3(
+            (Math.random() - 0.5) * 5,
+            -2,
+            (Math.random() - 0.5) * 5
+        );
+        ballBody.velocity = velocity;
+        
+        this.world.addBody(ballBody);
+        
+        this.balls.push({
+            mesh: ballMesh,
+            body: ballBody,
+            created: Date.now()
+        });
+        
+        // Remove old balls
+        if (this.balls.length > 20) {
+            const oldBall = this.balls.shift();
+            this.scene.remove(oldBall.mesh);
+            this.world.removeBody(oldBall.body);
+            oldBall.mesh.geometry.dispose();
+            oldBall.mesh.material.dispose();
         }
     }
     
@@ -112,28 +233,46 @@ class BallBouncerGame {
     
     async enterXR() {
         try {
-            this.updateStatus('Starte AR-Session...');
+            this.updateStatus(`Starte ${this.xrMode}-Session...`);
+            console.log('Requesting XR session:', this.xrMode);
             
-            const session = await navigator.xr.requestSession('immersive-ar', {
-                requiredFeatures: ['plane-detection'],
-                optionalFeatures: ['anchors']
-            });
+            let sessionOptions = {};
+            
+            if (this.xrMode === 'immersive-ar') {
+                sessionOptions = {
+                    optionalFeatures: ['plane-detection', 'anchors', 'local-floor']
+                };
+            } else if (this.xrMode === 'immersive-vr') {
+                sessionOptions = {
+                    optionalFeatures: ['local-floor', 'bounded-floor']
+                };
+            }
+            
+            const session = await navigator.xr.requestSession(this.xrMode, sessionOptions);
+            console.log('XR session created successfully');
             
             this.xrSession = session;
             
             session.addEventListener('end', () => {
+                console.log('XR session ended');
                 this.xrSession = null;
-                this.updateStatus('AR-Session beendet');
+                this.updateStatus('XR-Session beendet');
             });
             
             await this.renderer.xr.setSession(session);
+            console.log('Renderer XR session set');
             
-            this.updateStatus('AR aktiv - Erkenne Ebenen...');
-            this.startPlaneDetection();
+            if (this.xrMode === 'immersive-ar') {
+                this.updateStatus('AR aktiv - Erkenne Ebenen...');
+                this.startPlaneDetection();
+            } else {
+                this.updateStatus('VR aktiv! Trigger drücken zum Werfen');
+            }
+            
             this.animate();
             
         } catch (error) {
-            this.updateStatus('AR-Fehler: ' + error.message);
+            this.updateStatus(`${this.xrMode}-Fehler: ${error.message}`);
             console.error('XR-Fehler:', error);
         }
     }
@@ -301,7 +440,15 @@ class BallBouncerGame {
     }
     
     animate() {
-        if (this.xrSession) {
+        if (this.xrMode === 'desktop') {
+            // Desktop animation loop
+            const animate = () => {
+                requestAnimationFrame(animate);
+                this.render();
+            };
+            animate();
+        } else {
+            // XR animation loop
             this.renderer.setAnimationLoop(() => this.render());
         }
     }
